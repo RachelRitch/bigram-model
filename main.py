@@ -1,10 +1,17 @@
 import torch
 import random
 import math
-
+from pathlib import Path
 
 symbols = ["!", "(", ")", "-", "[", "]", "{", "}", ";", ":", "\'", "\"", "—", ",", "<", ">", ".", "/", "?", "@", "#", "$", "%", "^", "&", "*", "_", "~"]
 special = ['<pad>', '<unk>']
+
+def openlibrary():
+    text = ''
+    for path in Path('Books').glob('*.txt'):
+        with open(f'Books/{path.name}' , encoding='utf-8-sig') as f:
+            text += f.read()
+    return text
 
 def split_percent_list(input_list: list, percent: float):  
     if percent <= 0 or percent >= 1:
@@ -18,48 +25,42 @@ def split_percent_list(input_list: list, percent: float):
     
     return first_output_list, second_output_list
 
+def space_placeholder_inserter(list_str: list):
+    for i, w in enumerate(list_str):
+        word = ''
+        punucation = ''
+        for l in w:
+            if l in symbols and list_str[i-1] != '_':
+                word += '_' + l
+            else:
+                word += l
+        list_str[i] = word
+    return list_str
 
 def main():
-    input_text = '''There was nothing so very remarkable in that; nor did Alice think it
-            so very much out of the way to hear the Rabbit say to itself, “Oh
-            dear! Oh dear! I shall be late!” (when she thought it over afterwards,
-            it occurred to her that she ought to have wondered at this, but at the
-            time it all seemed quite natural but when the Rabbit actually took a
-            watch out of its waistcoat-pocket, and looked at it, and then hurried
-            on, Alice started to her feet, for it flashed across her mind that she
-            had never before seen a rabbit with either a waistcoat-pocket, or a
-            watch to take out of it, and burning with curiosity, she ran across the
-            field after it, and fortunately was just in time to see it pop down a
-            large rabbit-hole under the hedge.'''.split()
+    input_text = openlibrary()
+    input_text = input_text.split()
+    #input_text = input_text[:1000000]
     input_text,  test_text = split_percent_list(input_text, 0.8)
     output_text = ''
     vocab = list(input_text)
 
-    for i, w in enumerate(vocab):
-        word = ''
-        punucation = ''
-        for l in w:
-            if l in symbols and vocab[i-1] != '_':
-                word += '_' + l
-            else:
-                word += l
-        vocab[i] = word
-    
-    #print(vocab)
+    vocab = space_placeholder_inserter(vocab)
+    test_text = space_placeholder_inserter(test_text)
+
     vocab_set = sorted(set(vocab))
     for id, str in enumerate(special):
         vocab_set.insert(id, str)  
-    #print(vocab_set)
+
 
     wtoix = {word: i  for i, word in enumerate(vocab_set)}
     ixtow = {i: word  for i, word in enumerate(vocab_set)}
-    #print(wtoix)
+
 
     
     torch.manual_seed(1)
 
-    probablity_tensor = torch.zeros(len(wtoix), len(wtoix)) 
-
+    probablity_tensor = torch.zeros(len(wtoix), len(wtoix), dtype=torch.float) 
     input_word = input("Word: ")
     temp = float(input("Temp: "))
     loops = int(input("loop: "))
@@ -67,12 +68,12 @@ def main():
     for i in range(len(vocab)-1):
        probablity_tensor[wtoix[vocab[i]], wtoix[vocab[i + 1]]] += 1
 
-    k_probablity_tensor = probablity_tensor.clone()
+    k_probablity_tensor = probablity_tensor
     k_probablity_tensor += k
     rows = k_probablity_tensor.shape[0]
 
-    for i in range(rows):
-        k_probablity_tensor[i:].div_(k_probablity_tensor[i:].sum())
+    
+    k_probablity_tensor = k_probablity_tensor.div(k_probablity_tensor.sum(dim=1, keepdim=True))
 
     vocab_ix = []
     vocab_sentences = []
@@ -87,14 +88,12 @@ def main():
                 if vocab_ix != []:
                     vocab_sentences += [vocab_ix]
                 vocab_ix = []
-    print(vocab_sentences)
 
-    Test_tensor = torch.zeros(len(vocab_sentences), len(max(vocab_sentences, key=len)), dtype=torch.int16)
+    max_test_length = int(len(max(vocab_sentences, key=len)))
+    Test_tensor = torch.zeros(len(vocab_sentences), max_test_length, dtype=torch.long)
     for y, l in enumerate(vocab_sentences):
         for x, n in enumerate(l):
             Test_tensor[y, x] = n
-
-    print(Test_tensor)
 
     if wtoix[input_word] != '':
             output_text += input_word
@@ -103,14 +102,28 @@ def main():
                 row = k_probablity_tensor[i, :]
                 weight = row.tolist()
                 for i in range(len(weight)-1):
-                    weight[i] = weight[i]**temp
+                    weight[i] = weight[i]**(1/temp)
                 word = random.choices(range(rows), weights=weight)[0]
                 output_text +=  ('_' + ixtow[word])
                 input_word = ixtow[word]
+    
+    test_text_probablity = torch.zeros(len(vocab_sentences), max_test_length, dtype=torch.float)
+    number_of_pairs = 0
+    for iny, l in enumerate(vocab_sentences):
+        for inx, n in enumerate(l):
+                if inx > 0:
+                    if Test_tensor[iny, inx].item() != 0 and Test_tensor[iny, inx - 1].item() != 0:
+                        test_text_probablity[iny, inx] = -math.log(k_probablity_tensor[Test_tensor[iny, inx - 1], Test_tensor[iny, inx]].item())
+                        number_of_pairs += 1
+    
+    avg = test_text_probablity.sum() / number_of_pairs
+    perplexity = math.exp(avg)
+    geometric_mean = math.exp(-avg)
+    print('Perplexity: ', float(perplexity), ", Geometric Mean: ", geometric_mean)
+    
 
     finished_text = ''
     for i, l in enumerate(output_text):
-        #print(l)
         if l == "_":
             if i < len(output_text):
                 if output_text[i+1] in symbols:
@@ -119,12 +132,6 @@ def main():
                     l = ' '
         finished_text += l
     print(finished_text)
-        
-
-    #print(wtoix)
-    #print(probablity_tensor.sum())
-    #print(rows)
-    #print(k_probablity_tensor)
 
 
     
